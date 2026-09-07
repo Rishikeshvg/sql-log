@@ -51,3 +51,63 @@ one giant average across all customers instead of per-customer.
 one result unless GROUP BY tells SQL where to draw the group boundaries.
 Also: when data has a one-to-many relationship (order → payments),
 collapse the "many" side first before joining outward.
+
+**Entry 3 - Ranking orders per customer (window functions)**
+
+**Question:** For each customer, rank their own orders by value, highest to lowest. Ranking restarts for every new customer.
+
+**Query:**
+```sql
+SELECT customer_unique_id, olist_orders_dataset.order_id, total_payment,
+RANK() OVER (PARTITION BY customer_unique_id ORDER BY total_payment DESC) AS order_rank
+FROM (SELECT order_id, SUM(payment_value) AS total_payment
+      FROM olist_order_payments_dataset
+      GROUP BY order_id) AS x
+JOIN olist_orders_dataset ON x.order_id = olist_orders_dataset.order_id
+JOIN olist_customers_dataset ON olist_orders_dataset.customer_id = olist_customers_dataset.customer_id;
+```
+
+**Takeaway:** GROUP BY merges rows into one. Window functions (RANK, OVER, PARTITION BY) keep every row, just add a number to each one. PARTITION BY means "restart the count every time this column changes" — here, every new customer.
+
+---
+
+**Entry 4 - Missing payment record breaks the count**
+
+**What happened:** My average-order-value query returned 96095 customers one day, 96096 the next. Same query, same logic.
+
+**Why:** One order in the whole dataset has zero rows in the payments table. My JOIN was a normal JOIN, so it silently dropped that one order — and the customer who only had that one order disappeared from the results too.
+
+**How I found it:**
+```sql
+SELECT o.order_id, o.customer_id
+FROM olist_orders_dataset o
+LEFT JOIN olist_order_payments_dataset p ON o.order_id = p.order_id
+WHERE p.order_id IS NULL;
+```
+LEFT JOIN keeps all orders even with no match, so `WHERE ... IS NULL` shows exactly which ones have no payment.
+
+**Takeaway:** Real data has gaps. If two queries with the same logic give different row counts, don't ignore it — use LEFT JOIN + IS NULL to find what's missing.
+
+---
+
+**Entry 5 - Same ranking query, written with CTE + a GROUP BY fix**
+
+**Question:** Same as Entry 3, but written using `WITH` instead of a nested subquery.
+
+**Query:**
+```sql
+WITH x AS (
+  SELECT customer_unique_id, olist_order_payments_dataset.order_id, SUM(payment_value) AS total_pay
+  FROM olist_order_payments_dataset
+  JOIN olist_orders_dataset ON olist_order_payments_dataset.order_id = olist_orders_dataset.order_id
+  JOIN olist_customers_dataset ON olist_orders_dataset.customer_id = olist_customers_dataset.customer_id
+  GROUP BY olist_order_payments_dataset.order_id, customer_unique_id
+)
+SELECT customer_unique_id, order_id, total_pay,
+RANK() OVER (PARTITION BY customer_unique_id ORDER BY total_pay DESC) AS order_rank
+FROM x;
+```
+
+**Two things learned:**
+1. `WITH x AS (...)` works the same as `(...) AS x` in FROM. Just cleaner to read.
+2. First version only had `order_id` in GROUP BY, not `customer_unique_id`. SQLite allowed it, but stricter databases (Postgres, MySQL) would reject it. Rule: put every non-summed column from SELECT into GROUP BY too, always — even if SQLite lets you skip it.
