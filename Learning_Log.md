@@ -166,3 +166,58 @@ showed gaps of 60, 177, 330+ days.
 **Takeaway:** Before reaching for an advanced technique (self join, CTE),
 check if a simpler tool already known (GROUP BY + aggregate functions)
 solves the problem first.
+
+## Entry 8 - Self join for consecutive order pairs
+
+**Question:** For every customer who placed more than one order, show
+each pair of consecutive order dates side by side, with the day gap
+between them.
+
+**Query:**
+```sql
+WITH x AS (
+  SELECT customer_unique_id, order_purchase_timestamp
+  FROM olist_customers_dataset c
+  JOIN olist_orders_dataset o ON c.customer_id = o.customer_id
+),
+y AS (
+  SELECT a1.customer_unique_id, a1.order_purchase_timestamp AS order_date,
+  MIN(a2.order_purchase_timestamp) AS next_order_date
+  FROM x AS a1
+  JOIN x AS a2 ON a1.customer_unique_id = a2.customer_unique_id
+    AND a1.order_purchase_timestamp < a2.order_purchase_timestamp
+  GROUP BY a1.customer_unique_id, a1.order_purchase_timestamp
+)
+SELECT customer_unique_id, order_date, next_order_date,
+ROUND(julianday(next_order_date) - julianday(order_date)) AS date_diff
+FROM y;
+```
+
+**Bug 1:** First attempt joined the table to itself matching on
+`order_purchase_timestamp` instead of customer identity — this compared
+each row to itself (same timestamp), producing near-duplicate rows or
+zero real pairs.
+**Fix 1:** Match ON customer identity instead, with the date comparison
+as a separate AND condition — not the join key itself.
+
+**Bug 2:** Joining on `customer_id` (the per-order token from Entry 1)
+still failed to find real repeat customers, since it never repeats.
+**Fix 2:** Joined orders to customers first to get `customer_unique_id`
+attached to every row, then self-joined on that instead.
+
+**Bug 3:** Raw self join (customer match + date-after condition) returned
+every future order paired with every past order — not just the
+immediately next one. E.g. Order1 matched with both Order2 and Order3.
+**Fix 3:** Grouped by the earlier order (a1), and used MIN() on the later
+order's date (a2) to keep only the closest future order per row.
+
+**Bug 4:** Tried computing the day-gap in the same SELECT line where
+`order_date`/`next_order_date` aliases were defined — SQL can't resolve
+an alias in the same list it's being created in.
+**Fix 4:** Added a second CTE — first CTE narrows to consecutive pairs,
+second CTE (final SELECT) computes the day-gap using the resolved aliases.
+
+**Takeaway:** A self join's ON clause decides *what gets matched* — match
+on identity, not on the value you're trying to compare. When a join
+produces more pairs than needed, GROUP BY + MIN/MAX can narrow it down
+to just the closest match, without needing a window function like LEAD().
