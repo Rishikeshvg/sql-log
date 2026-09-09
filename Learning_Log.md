@@ -133,3 +133,36 @@ producing garbage or NULL results.
 **Takeaway:** julianday() converts a date into a number so subtraction works.
 Always filter to the relevant status/condition before running date math —
 irrelevant rows (NULLs, cancelled orders) will corrupt the result silently.
+
+## Entry 7 - MIN/MAX solved what I thought needed a self join
+
+**Question:** Retrieve first order date, latest order date, and the
+difference between them for each customer — helps identify which
+customers stay dormant.
+
+**Query:**
+```sql
+SELECT customer_unique_id, first_p, latest_p,
+ROUND(julianday(latest_p) - julianday(first_p)) AS time_diff
+FROM (
+  SELECT customer_unique_id,
+  MIN(order_purchase_timestamp) AS first_p,
+  MAX(order_purchase_timestamp) AS latest_p
+  FROM olist_customers_dataset
+  JOIN olist_orders_dataset ON olist_customers_dataset.customer_id = olist_orders_dataset.customer_id
+  GROUP BY customer_unique_id
+)
+ORDER BY time_diff DESC;
+```
+
+**Bug:** Tried to use an alias (first_p) in the same SELECT line where it
+was defined, without a subquery. SQL can't reference an alias before it's
+resolved in that scope.
+**Fix:** Wrapped the MIN/MAX query as a subquery, then used the aliases
+in the outer SELECT where they now exist.
+**Data insight:** Most date differences came out as 0 — meaning most
+customers placed exactly one order and never returned. A few customers
+showed gaps of 60, 177, 330+ days.
+**Takeaway:** Before reaching for an advanced technique (self join, CTE),
+check if a simpler tool already known (GROUP BY + aggregate functions)
+solves the problem first.
