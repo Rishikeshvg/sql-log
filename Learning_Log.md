@@ -111,3 +111,44 @@ FROM x;
 **Two things learned:**
 1. `WITH x AS (...)` works the same as `(...) AS x` in FROM. Just cleaner to read.
 2. First version only had `order_id` in GROUP BY, not `customer_unique_id`. SQLite allowed it, but stricter databases (Postgres, MySQL) would reject it. Rule: put every non-summed column from SELECT into GROUP BY too, always — even if SQLite lets you skip it.
+
+
+Entry 6 - Delivery delay using date functions
+
+Question: For every delivered order, calculate how many days late (or early) it arrived — compare order_delivered_customer_date against order_estimated_delivery_date. Positive number = late, negative = early.
+
+Query:
+
+sql
+SELECT order_id,
+ROUND(julianday(order_delivered_customer_date) - julianday(order_estimated_delivery_date)) AS day_diff
+FROM olist_orders_dataset
+WHERE order_status = 'delivered';
+
+Bug: First version had no WHERE filter — ran the date math on every order, including cancelled/undelivered ones with no delivery date, producing garbage or NULL results.
+Fix: Filtered to order_status = 'delivered' before doing any date math.
+Takeaway: julianday() converts a date into a number so subtraction works. Always filter to the relevant status/condition before running date math — irrelevant rows (NULLs, cancelled orders) will corrupt the result silently.
+
+Entry 7 - MIN/MAX solved what I thought needed a self join
+
+Question: Retrieve first order date, latest order date, and the difference between them for each customer — helps identify which customers stay dormant.
+
+Query:
+
+sql
+SELECT customer_unique_id, first_p, latest_p,
+ROUND(julianday(latest_p) - julianday(first_p)) AS time_diff
+FROM (
+  SELECT customer_unique_id,
+  MIN(order_purchase_timestamp) AS first_p,
+  MAX(order_purchase_timestamp) AS latest_p
+  FROM olist_customers_dataset
+  JOIN olist_orders_dataset ON olist_customers_dataset.customer_id = olist_orders_dataset.customer_id
+  GROUP BY customer_unique_id
+)
+ORDER BY time_diff DESC;
+
+Bug: Tried to use an alias (first_p) in the same SELECT line where it was defined, without a subquery. SQL can't reference an alias before it's resolved in that scope.
+Fix: Wrapped the MIN/MAX query as a subquery, then used the aliases in the outer SELECT where they now exist.
+Data insight: Most date differences came out as 0 — meaning most customers placed exactly one order and never returned. A few customers showed gaps of 60, 177, 330+ days.
+Takeaway: Before reaching for an advanced technique (self join, CTE), check if a simpler tool already known (GROUP BY + aggregate functions) solves the problem first.
